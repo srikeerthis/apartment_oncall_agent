@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MIA — on-call maintenance agent</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --ink:#14171a; --muted:#5b6572; --line:#e3e6ea;
+    --accent:#2f6df6; --open:#c2410c; --prog:#8a5a00; --done:#166534;
+    --openbg:#fff1e7; --progbg:#fff6df; --donebg:#e7f6ec;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0f1216; --panel:#161a20; --ink:#e8eaed; --muted:#9099a6; --line:#262c35;
+      --accent:#6f9bff; --open:#ff9f6b; --prog:#f0c24b; --done:#68d391;
+      --openbg:#3a2113; --progbg:#382d10; --donebg:#12301f;
+    }
+  }
+  :root[data-theme=light]{
+    --bg:#f6f7f9; --panel:#fff; --ink:#14171a; --muted:#5b6572; --line:#e3e6ea;
+    --accent:#2f6df6; --open:#c2410c; --prog:#8a5a00; --done:#166534;
+    --openbg:#fff1e7; --progbg:#fff6df; --donebg:#e7f6ec;
+  }
+  :root[data-theme=dark]{
+    --bg:#0f1216; --panel:#161a20; --ink:#e8eaed; --muted:#9099a6; --line:#262c35;
+    --accent:#6f9bff; --open:#ff9f6b; --prog:#f0c24b; --done:#68d391;
+    --openbg:#3a2113; --progbg:#382d10; --donebg:#12301f;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  header{
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:14px 20px; border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  header h1{font-size:16px; margin:0; font-weight:650; letter-spacing:-.01em}
+  header .sub{color:var(--muted); font-size:13px}
+  .spacer{flex:1}
+  .pill{
+    font-size:12px; padding:3px 10px; border-radius:999px;
+    border:1px solid var(--line); color:var(--muted); white-space:nowrap;
+  }
+  .pill.live{color:var(--done); border-color:currentColor}
+  .pill.err{color:var(--open); border-color:currentColor}
+
+  main{
+    display:grid; gap:14px; padding:14px 20px 24px;
+    grid-template-columns:minmax(300px,1fr) minmax(320px,1.1fr) minmax(320px,1.2fr);
+    align-items:start;
+  }
+  @media (max-width:1100px){ main{grid-template-columns:1fr} }
+
+  section{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    display:flex; flex-direction:column; min-height:0; overflow:hidden;
+  }
+  section > h2{
+    margin:0; padding:12px 14px; font-size:13px; font-weight:650;
+    letter-spacing:.02em; text-transform:uppercase; color:var(--muted);
+    border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center;
+  }
+  .scroll{overflow-y:auto; max-height:min(62vh,620px); padding:12px 14px}
+
+  /* chat */
+  .msg{margin-bottom:10px; display:flex}
+  .msg .bubble{
+    padding:8px 12px; border-radius:12px; max-width:86%;
+    border:1px solid var(--line); white-space:pre-wrap; overflow-wrap:anywhere;
+  }
+  .msg.user{justify-content:flex-end}
+  .msg.user .bubble{background:var(--accent); color:#fff; border-color:transparent}
+  .msg.system .bubble{background:transparent; color:var(--muted); font-size:13px; font-style:italic}
+  form{display:flex; gap:8px; padding:12px 14px; border-top:1px solid var(--line)}
+  input[type=text]{
+    flex:1; min-width:0; padding:9px 12px; border-radius:9px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink); font:inherit;
+  }
+  input[type=text]:focus{outline:2px solid var(--accent); outline-offset:-1px}
+  button{
+    padding:9px 16px; border-radius:9px; border:0; background:var(--accent);
+    color:#fff; font:inherit; font-weight:600; cursor:pointer;
+  }
+  button:disabled{opacity:.5; cursor:not-allowed}
+
+  /* transcript */
+  .line{padding:7px 0; border-bottom:1px solid var(--line)}
+  .line:last-child{border-bottom:0}
+  .who{font-weight:650; font-size:13px}
+  .when{color:var(--muted); font-size:11px; font-variant-numeric:tabular-nums}
+  .what{overflow-wrap:anywhere}
+  .unparsed{color:var(--muted); font-style:italic}
+  .line.agent{border-left:3px solid var(--accent); padding-left:9px; margin-left:-12px}
+  .line.agent .who{color:var(--accent)}
+
+  /* activity */
+  .act{display:flex; gap:8px; padding:6px 0; font-size:13px; align-items:baseline}
+  .act .dot{width:7px; height:7px; border-radius:99px; background:var(--done); flex:none}
+  .act.bad .dot{background:var(--open)}
+  .act .txt{overflow-wrap:anywhere}
+
+  /* tickets */
+  .stats{display:flex; gap:8px; flex-wrap:wrap; padding:12px 14px 0}
+  .stat{
+    flex:1 1 90px; border:1px solid var(--line); border-radius:9px; padding:8px 10px;
+  }
+  .stat b{display:block; font-size:20px; font-variant-numeric:tabular-nums}
+  .stat span{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em}
+  .tk{padding:10px 0; border-bottom:1px solid var(--line)}
+  .tk:last-child{border-bottom:0}
+  .tk .top{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+  .tk .issue{margin-top:3px; overflow-wrap:anywhere}
+  .tag{
+    font-size:11px; font-weight:650; padding:2px 8px; border-radius:999px;
+    text-transform:uppercase; letter-spacing:.03em; white-space:nowrap;
+  }
+  .Open{background:var(--openbg); color:var(--open)}
+  .InProgress{background:var(--progbg); color:var(--prog)}
+  .Resolved{background:var(--donebg); color:var(--done)}
+  .tenant{font-weight:650; font-size:13px}
+  .empty{color:var(--muted); padding:18px 0; text-align:center; font-size:13px}
+  .errbox{
+    margin:10px 14px; padding:9px 11px; border-radius:8px; font-size:13px;
+    background:var(--openbg); color:var(--open); overflow-wrap:anywhere;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MIA</h1>
+  <span class="sub">on-call maintenance agent</span>
+  <span class="spacer"></span>
+  <span class="pill" id="sessionPill">no session</span>
+  <span class="pill" id="botPill" hidden></span>
+</header>
+
+<main>
+  <section>
+    <h2>Start a call</h2>
+    <div class="scroll" id="chat"></div>
+    <form id="chatForm">
+      <input type="text" id="chatInput" placeholder="Paste the Google Meet link…"
+             autocomplete="off" autofocus>
+      <button type="submit" id="sendBtn">Send</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Live transcript <span class="pill" id="lineCount">0 lines</span></h2>
+    <div class="scroll" id="transcript">
+      <div class="empty">Nothing yet. The transcript appears once MIA is admitted to the call.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Tickets <span class="pill" id="ticketPill">—</span></h2>
+    <div class="stats" id="stats"></div>
+    <div id="ticketErrors"></div>
+    <div class="scroll" id="tickets">
+      <div class="empty">Loading…</div>
+    </div>
+    <h2 style="border-top:1px solid var(--line)">Agent activity</h2>
+    <div class="scroll" id="activity" style="max-height:180px">
+      <div class="empty">Nothing yet this session.</div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let cur = {chat:0, transcript:0, activity:0};
+let ticketsInFlight = false;
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const clock = iso => { try { return new Date(iso).toLocaleTimeString(); } catch { return ""; } };
+const atBottom = el => el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+
+/* ---------- chat ---------- */
+$("chatForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const text = $("chatInput").value.trim();
+  if (!text) return;
+  $("chatInput").value = "";
+  $("sendBtn").disabled = true;
+  try {
+    await fetch("/api/chat", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({message: text})
+    });
+    await tick();
+    loadTickets();
+  } finally {
+    $("sendBtn").disabled = false;
+    $("chatInput").focus();
+  }
+});
+
+function renderChat(entries){
+  const box = $("chat"), stick = atBottom(box);
+  for (const m of entries){
+    const row = document.createElement("div");
+    row.className = "msg " + m.role;
+    row.innerHTML = `<div class="bubble">${esc(m.text)}</div>`;
+    box.appendChild(row);
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- transcript ---------- */
+function renderTranscript(entries){
+  const box = $("transcript"), stick = atBottom(box);
+  const blank = box.querySelector(".empty");
+  if (entries.length && blank) blank.remove();
+  for (const t of entries){
+    const row = document.createElement("div");
+    row.className = "line" + (t.is_agent ? " agent" : "");
+    const body = t.text
+      ? `<div class="what">${esc(t.text)}</div>`
+      : `<div class="what unparsed">(unparsed payload — see data/transcript_log.jsonl)</div>`;
+    row.innerHTML =
+      `<div class="top"><span class="who">${esc(t.speaker)}</span>
+       <span class="when">${clock(t.at)}</span></div>${body}`;
+    box.appendChild(row);
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- activity ---------- */
+function renderActivity(entries){
+  const box = $("activity"), stick = atBottom(box);
+  const blank = box.querySelector(".empty");
+  if (entries.length && blank) blank.remove();
+  const label = {status_lookup:"Read status", ticket_filed:"Filed ticket", error:"Blocked"};
+  for (const a of entries){
+    const row = document.createElement("div");
+    row.className = "act" + (a.ok ? "" : " bad");
+    row.innerHTML = `<span class="dot"></span>
+      <span class="txt"><b>${esc(label[a.kind] || a.kind)}</b>${
+        a.tenant_id ? " · " + esc(a.tenant_id) : ""} — ${esc(a.detail)}</span>
+      <span class="spacer"></span><span class="when">${clock(a.at)}</span>`;
+    box.appendChild(row);
+  }
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+/* ---------- session ---------- */
+function renderSession(s){
+  const pill = $("sessionPill"), bot = $("botPill");
+  if (!s){ pill.textContent = "no session"; pill.className = "pill"; bot.hidden = true; return; }
+  pill.textContent = s.status;
+  pill.className = "pill" + (s.status === "in_call" ? " live" : s.status === "error" ? " err" : "");
+  if (s.bot_id){ bot.hidden = false; bot.textContent = "bot " + s.bot_id; }
+}
+
+/* ---------- tickets ---------- */
+async function loadTickets(){
+  if (ticketsInFlight) return;
+  ticketsInFlight = true;
+  try {
+    const r = await fetch("/api/tickets");
+    const d = await r.json();
+    renderTickets(d);
+  } catch (e) {
+    $("ticketErrors").innerHTML = `<div class="errbox">Could not load tickets: ${esc(e.message)}</div>`;
+  } finally {
+    ticketsInFlight = false;
+  }
+}
+
+function renderTickets(d){
+  $("ticketPill").textContent = d.total + (d.total === 1 ? " ticket" : " tickets");
+
+  const order = ["Open","In Progress","Resolved"];
+  $("stats").innerHTML = order.map(s =>
+    `<div class="stat"><b>${d.counts[s] || 0}</b><span>${esc(s)}</span></div>`).join("");
+
+  $("ticketErrors").innerHTML = (d.errors || []).length
+    ? `<div class="errbox">${d.errors.map(esc).join("<br>")}</div>` : "";
+
+  const box = $("tickets");
+  if (!d.tickets.length){
+    box.innerHTML = `<div class="empty">No tickets yet.</div>`;
+    return;
+  }
+  box.innerHTML = d.tickets.map(t => `
+    <div class="tk">
+      <div class="top">
+        <span class="tag ${esc((t.status||"").replace(/\s/g,""))}">${esc(t.status)}</span>
+        <span class="tenant">${esc(t.tenant_name)}</span>
+        <span class="when">unit ${esc(t.unit)} · ${esc(t.created_at)}</span>
+      </div>
+      <div class="issue">${esc(t.issue)}</div>
+    </div>`).join("");
+}
+
+/* ---------- poll ---------- */
+async function tick(){
+  try {
+    const q = new URLSearchParams({
+      chat_since: cur.chat, transcript_since: cur.transcript, activity_since: cur.activity
+    });
+    const d = await (await fetch("/api/state?" + q)).json();
+    renderSession(d.session);
+    if (d.chat.length){ renderChat(d.chat); cur.chat = d.chat[d.chat.length-1].seq; }
+    if (d.transcript.length){
+      renderTranscript(d.transcript);
+      cur.transcript = d.transcript[d.transcript.length-1].seq;
+      $("lineCount").textContent = cur.transcript + " lines";
+    }
+    if (d.activity.length){
+      renderActivity(d.activity);
+      cur.activity = d.activity[d.activity.length-1].seq;
+      loadTickets();               // the agent just touched Airtable
+    }
+  } catch { /* server restarting under --reload; next tick retries */ }
+}
+
+tick();
+loadTickets();
+setInterval(tick, 1500);
+setInterval(loadTickets, 15000);
+</script>
+</body>
+</html>
