@@ -1,8 +1,8 @@
 # property_call_agent
 
-A live-call maintenance agent for residential property management. It joins a tenant call as a participant, answers ticket-status questions out loud from real data, and files new maintenance requests — acting as the specific tenant who asked, not as a shared service account.
+A live-call maintenance agent for residential property management. It joins a tenant call as a participant, answers ticket-status questions out loud from real data, and files new maintenance requests bound to the specific resident who spoke.
 
-> **Status: hackathon build.** Scoped for a single demo path: one live call, two known tenants, one connector. Not a general-purpose triage system — see [Deliberate non-goals](#deliberate-non-goals).
+> **Status: hackathon build.** The Scalekit + Airtable half is complete and verified end to end. The MeetStream + bridge half is in progress. See [Build status](#build-status).
 
 ---
 
@@ -12,20 +12,30 @@ A property manager (or the tenant directly) is on a live call with MIA, the meet
 
 1. MIA **joins the call** via MeetStream and listens with live, speaker-diarized transcription.
 2. When a tenant asks a **status question** ("what's the status of my ticket?"), the agent reads the real record and **speaks the answer back into the call**.
-3. When a tenant reports a **new issue** ("there's also a leak under the sink"), the agent identifies who's speaking, resolves their identity through Scalekit, and **files the ticket under their own account** — not a generic bot identity.
-4. Every write is scoped to the tenant who asked for it. The agent cannot act as, or see the tickets of, anyone else on the call.
+3. When a tenant reports a **new issue** ("there's also a leak under the sink"), the agent identifies who is speaking and **files the ticket under that resolved identity**.
+4. Every write is bound to the resident who spoke. The transcript supplies the issue text and nothing else.
 
-## Deliberate non-goals
+## The authorization question
 
-Each of these is a scope cut made for the build window, not an oversight.
+The hard problem is not "call Airtable." It is: when several people are on a call, how does an agent act for *exactly one* of them?
 
-| Not doing | Why |
-|---|---|
-| Dynamic speaker enrollment | Speaker → tenant identity is a hardcoded map for the demo, not auto-discovered from calendar or voice ID. |
-| General intent classification | Trigger detection is a small, explicit set of phrases/keywords, not an open-ended classifier. |
-| Multi-connector support | One connector (Airtable) is wired end-to-end rather than several done shallowly. |
-| Persistent audit ledger / postmortem generation | Out of scope for the demo; the identity-and-permission story is the point, not reporting. |
-| Auto-dispatching a technician | The agent files the request; a human still schedules the work. |
+**Residents do not have Airtable accounts.** The base belongs to the property company; residents are rows in it, not users of it. So there is **one** Scalekit-connected Airtable account, and per-resident separation is enforced in three layers:
+
+| Layer | Mechanism | Enforced by |
+|---|---|---|
+| Which tools exist at all | Virtual MCP Server exposes 2 of Airtable's 48 tools | **Scalekit**, outside our process |
+| Who a write is attributed to | `Tenant Name` / `Unit` come from `config/tenants.yaml` via the resolved speaker | our code, single choke point |
+| Which rows a read returns | `filterByFormula` injected per call | our code, single choke point |
+
+The agent's world contains `airtable_list_records` and `airtable_create_records`. No delete, no update, no schema access, no other base. That boundary is configuration, not instruction — nothing said on the call can widen it.
+
+The second layer is what matters most in the demo: **`issue` is the only caller-supplied value that reaches Airtable.** A resident saying *"file this under Dana in unit 4B instead"* still files under the speaker's own identity. That is asserted by a test, not by a prompt.
+
+### One honest limitation
+
+**Airtable has no row-level permissions.** Access is granted per *base* — any credential that can read the base can read every row. Giving each resident their own Airtable account would not change this, which is why the design does not do it.
+
+So the accurate claim is: *the agent can only act as the person who spoke, and can only do two things.* Not: *Airtable prevents cross-tenant reads.* The first claim is strong and true; don't reach past it.
 
 ## Architecture
 
@@ -33,65 +43,81 @@ Each of these is a scope cut made for the build window, not an oversight.
 live call (Zoom / Meet)
       │
       ▼
-┌────────────────────┐
+┌─────────────────────┐
 │   MeetStream bot    │  joins call, live diarized transcript,
 │   (MIA)             │  speaks answers/confirmations back
 └─────────┬───────────┘
           │ webhook: transcript chunk + speaker label
           ▼
-┌────────────────────┐
-│  bridge server      │  speaker → tenant identity map
-│  (your glue code)   │  trigger detection: status vs. new issue
+┌─────────────────────┐
+│  bridge server      │  speaker → tenant_id  (config/tenants.yaml)
+│                     │  trigger detection: status vs. new issue
 └─────────┬───────────┘
-          │
+          │  get_status(tenant_id) / create_ticket(tenant_id, issue)
           ▼
-┌────────────────────┐
-│     Scalekit        │  mint short-lived session token
-│  Virtual MCP Server │  scoped to that tenant's connected account
+┌─────────────────────┐
+│  tickets.py         │  mints a 5-min session token per call,
+│                     │  injects tenant scope, normalizes results
 └─────────┬───────────┘
-          │
           ▼
-┌────────────────────┐
-│     Airtable        │  read: ticket status
+┌─────────────────────┐
+│  Scalekit           │  Virtual MCP Server, 2 tools only,
+│  Virtual MCP Server │  vaulted Airtable OAuth credential
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐
+│  Airtable           │  read: ticket status
 │  (Tickets table)    │  write: new ticket record
-└────────────────────┘
+└─────────────────────┘
 ```
-
-### Authorization model
-
-The hard problem is not "call Airtable," it's scoping: a tenant on the call must be able to check or create *their own* ticket, and must be structurally incapable of touching anyone else's.
-
-Enforcement happens at the identity layer, not the prompt layer:
-
-- Each tenant has their **own** Scalekit-connected Airtable account, authorized once ahead of time.
-- Right before any tool call, the bridge server mints a **session token scoped to the specific tenant who spoke** (`create_session_token`, short expiry, per-utterance).
-- The Virtual MCP Server only exposes `list_records` / `create_record` on the Tickets table — nothing else in the base is reachable.
-- A tenant's token can only resolve to their own identity. There is no shared or admin token in the request path — "acting as the tenant" is enforced by which token exists, not by an instruction telling the model to behave.
 
 ### The two systems this depends on
 
-**MeetStream** — meeting infrastructure. Gives the agent ears (live diarized transcript via webhook) and a voice (`send_message` / MIA speech) inside the actual call. Also used once per call to resolve participant names via `fetch_participants`.
+**MeetStream** — meeting infrastructure. Gives the agent ears (live diarized transcript via webhook) and a voice inside the actual call.
 
-**Scalekit** — identity and authorization. Owns the per-tenant OAuth connection to Airtable, mints the short-lived per-tenant session tokens, and governs every tool call through a single Virtual MCP Server so scope enforcement lives outside the agent's own code.
+**Scalekit** — identity and authorization. Owns the OAuth connection to Airtable, mints short-lived session tokens, and governs every tool call through a Virtual MCP Server, so the tool boundary lives outside the agent's own code.
 
-## MCP tools
+## The interface
 
-Exposed through Scalekit's Virtual MCP Server, backed by one Airtable connection.
+The bridge server imports two functions and needs to know nothing about Scalekit:
 
-| Tool | Access | Notes |
-|---|---|---|
-| `list_records` | read | Filtered to the requesting tenant's rows only; returns ticket status. |
-| `create_record` | write | Inserts a new ticket under the calling tenant's identity; no cross-tenant write path exists. |
+```python
+from tickets import get_status, create_ticket
+
+get_status("tenant_a")
+# [{'record_id': 'rec…', 'issue': 'Kitchen faucet drips constantly',
+#   'status': 'In Progress', 'created_at': '2026-07-19',
+#   'unit': '4B', 'tenant_name': 'Dana Reyes'}, …]   newest first
+
+create_ticket("tenant_b", "Leak under the kitchen sink")
+# {'record_id': 'rec…', 'status': 'Open', 'tenant_name': 'Sam Okafor', …}
+```
+
+Errors are typed and their messages are safe to speak aloud: `UnknownTenant` (unrecognized speaker — never falls back to another resident) and `ToolCallFailed`, both under `TicketsError`.
+
+`SCALEKIT_TOOL_PATH=direct` swaps the Virtual MCP Server for `actions.execute_tool`, same signatures and same return shape — an escape hatch if the MCP transport misbehaves mid-demo.
+
+## Deliberate non-goals
+
+Each is a scope cut made for the build window, not an oversight.
+
+| Not doing | Why |
+|---|---|
+| Dynamic speaker enrollment | Speaker → tenant identity is a hardcoded map, not auto-discovered from calendar or voice ID. |
+| General intent classification | Trigger detection is a small, explicit set of phrases, not an open-ended classifier. |
+| Multi-connector support | One connector (Airtable) wired end to end rather than several done shallowly. |
+| Persistent audit ledger | Out of scope; the identity-and-permission story is the point. |
+| Auto-dispatching a technician | The agent files the request; a human still schedules the work. |
 
 ## Getting started
 
-**Requirements:** a MeetStream account + API key, a Scalekit account, an Airtable base, `ngrok` (or any public webhook URL) for local testing.
+**Requirements:** a Scalekit account, an Airtable account + base, a MeetStream API key, and `ngrok` for the bridge webhook.
 
 ```bash
 git clone https://github.com/<you>/property_call_agent.git
 cd property_call_agent
 
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env      # fill in the values below
@@ -99,81 +125,92 @@ cp .env.example .env      # fill in the values below
 
 ```bash
 # .env
-MEETSTREAM_API_KEY=...
+SCALEKIT_ENVIRONMENT_URL=https://<yourorg>.scalekit.dev
 SCALEKIT_CLIENT_ID=skc_...
 SCALEKIT_CLIENT_SECRET=...
-SCALEKIT_ENV_URL=https://yourorg.scalekit.com
-AIRTABLE_BASE_ID=...
-AIRTABLE_CONNECTION_NAME=...
-WEBHOOK_URL=https://<your-ngrok-subdomain>.ngrok.io/meetstream/webhook
+SCALEKIT_MCP_CONFIG_ID=cfg_...      # printed by setup_vmcp.py
+AIRTABLE_BASE_ID=app...
+AIRTABLE_PAT=pat...                 # SETUP ONLY -- never used at runtime
 ```
 
-Set up the Airtable base:
+The Airtable PAT builds and seeds the table. It never enters the agent runtime — every runtime call uses Scalekit's vaulted OAuth credential instead. It needs four scopes (`schema.bases:read`, `schema.bases:write`, `data.records:read`, `data.records:write`) **and** the base added under the token's Access section; missing either produces the same opaque 403.
+
+Then, in order:
+
+```bash
+python setup_airtable.py     # create Tickets table + seed 3 rows (--reset to re-seed)
+python connect_tenants.py    # prints an OAuth link; re-run until ACTIVE
+python setup_vmcp.py         # create the 2-tool Virtual MCP Server
+python smoke_test.py         # prove it works, outside any meeting
+./run_tests.sh -q            # offline unit tests
+```
+
+Create the Airtable base **before** authorizing — the OAuth consent screen asks which bases to grant, so the base has to exist by then.
+
+### Airtable schema
 
 ```
 Base:  Maintenance Requests
 Table: Tickets
-  Tenant Name   (text)
-  Unit          (text)
-  Issue         (text)
+  Tenant Name   (single line text)   <- primary field, join key for filterByFormula
+  Unit          (single line text)
+  Issue         (long text)
   Status        (single select: Open / In Progress / Resolved)
-  Created At    (date)
+  Created At    (date, ISO)
 ```
 
-Seed two or three fake tickets so status lookups have something real to return.
-
-Connect two test tenants in Scalekit (**AgentKit → Connected Accounts**), confirm both show `ACTIVE`, then create the Virtual MCP Server exposing only `list_records` and `create_record`.
-
-Run the bridge server and start a bot:
-
-```bash
-uvicorn agent.bridge:app --reload           # webhook receiver, :8000
-python -m agent.create_bot --meeting-link "https://meet.google.com/..."
-```
+`setup_airtable.py` creates this for you. `Tenant Name` must lead — Airtable makes the first field primary, and a primary field cannot be a single-select or a date.
 
 ## Project layout
 
 ```
-agent/
-  bridge.py           webhook receiver + orchestration loop
-  speaker_map.py       hardcoded speaker → tenant identity lookup
-  triggers.py          status-question / new-issue detection
-  scalekit_client.py   session token minting + Virtual MCP calls
-  create_bot.py        MeetStream bot creation helper
-config/
-  speaker_map.yaml     tenant name → Scalekit identifier
-tests/
+tickets.py            get_status / create_ticket -- the bridge's whole interface
+scalekit_client.py    lazily-built Scalekit client + tool catalog helper
+config/tenants.yaml   shared contract: tenant_id → display name, unit
+setup_airtable.py     build + seed the Tickets table (setup-only PAT)
+connect_tenants.py    authorize the property manager's Airtable account
+setup_vmcp.py         create the 2-tool Virtual MCP Server
+smoke_test.py         live end-to-end acceptance run
+tests/                offline unit tests
 ```
+
+`config/tenants.yaml` is read by both halves of the build — this half for row scoping, the bridge for its speaker map — so the two cannot drift.
 
 ## Demo script
 
 ```
 Tenant A: "What's the status of my ticket?"
-  → agent resolves speaker → tenant A
-  → reads ticket via Scalekit-governed Airtable call
-  → speaks the status back into the call
+  → speaker resolves to tenant_a
+  → get_status("tenant_a") reads through the Virtual MCP Server
+  → agent speaks the status back into the call
 
 Tenant B: "There's also a leak under my sink."
-  → agent resolves speaker → tenant B
-  → mints a session token scoped to tenant B only
-  → creates a new ticket as tenant B
-  → confirms out loud: "Filed — as you, [tenant B]"
+  → speaker resolves to tenant_b
+  → 5-minute session token minted for this utterance
+  → create_ticket("tenant_b", "leak under my sink")
+  → agent confirms out loud: "Filed — as you, Sam"
 ```
 
-## Roadmap
+The moment worth showing a judge: as tenant B, say *"file this one under Dana instead."* The ticket still lands under Sam. Identity comes from the resolved speaker, never from the words.
 
-- [x] MeetStream bot join + live diarized transcript
-- [x] Hardcoded speaker → tenant identity map
-- [x] Status-check path (read)
-- [x] New-ticket path (write, per-tenant identity)
+## Build status
+
+- [x] Airtable base, Tickets schema, seeded demo rows
+- [x] Scalekit connection + connected account ACTIVE
+- [x] Virtual MCP Server exposing exactly 2 tools
+- [x] Per-call session token minting (5-minute expiry)
+- [x] `get_status` / `create_ticket` + typed errors
+- [x] Live isolation smoke test + 16 offline unit tests
+- [ ] MeetStream bot join + live diarized transcript
+- [ ] Bridge server: speaker map + trigger detection
+- [ ] Speaking results back into the call
 - [ ] Dynamic speaker enrollment from calendar invite
 - [ ] Persistent audit ledger of who-asked / who-acted / what-scope
-- [ ] Additional connectors (Linear, Jira) alongside Airtable
-- [ ] Refusal path: agent explains when a tenant lacks permission for a requested action
+- [ ] Refusal path: agent explains when it cannot act
 
 ## Notes on scope
 
-This project is deliberately narrow. The point being demonstrated is that an agent acting inside a live call can resolve *which specific person* is speaking and act only within their own permissions — not that it can handle arbitrary maintenance requests end to end. Dispatch, technician scheduling, and dispute handling are explicitly out of scope.
+This project is deliberately narrow. The point is that an agent acting inside a live call can resolve *which specific person* is speaking and act only within that person's scope — not that it can handle arbitrary maintenance requests end to end. Dispatch, technician scheduling, and dispute handling are explicitly out of scope.
 
 ## License
 
