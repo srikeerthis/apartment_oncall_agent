@@ -1,0 +1,31 @@
+# Shared tenant contract.
+#
+# Read by BOTH halves of the build:
+#   - this half  -> Airtable row scoping + the identity every write is stamped with
+#   - the bridge -> speaker label from the MeetStream transcript maps to a tenant_id
+#
+# IDENTITY MODEL
+# Residents do not own Airtable accounts -- the property company does. So there is
+# ONE connected account (below), and per-tenant separation is enforced by:
+#   1. Tenant Name written from the resolved identity, never from the transcript
+#   2. filterByFormula on every read, injected at a single choke point
+#   3. the Virtual MCP Server exposing 2 of Airtable's 48 tools
+# Airtable itself has NO row-level permissions -- any credential that can read the
+# base can read every row. Do not claim otherwise in the demo.
+
+property_manager:
+  # The single Airtable account that owns the Maintenance Requests base.
+  # This is the identifier the Scalekit connected account is keyed on.
+  identifier: srikeerthisrinivasan1@gmail.com
+  connection_name: airtable
+
+tenants:
+  tenant_a:
+    # display_name MUST match the Airtable "Tenant Name" cell exactly -- it is the
+    # join key for filterByFormula, so a trailing space silently returns 0 tickets.
+    display_name: Dana Reyes
+    unit: "4B"
+
+  tenant_b:
+    display_name: Sam Okafor
+    unit: "2A"
