@@ -36,7 +36,7 @@ import scalekit_client as sk
 
 load_dotenv()
 
-BASE_ID = os.getenv("AIRTABLE_BASE_ID") or os.getenv("AIRTABLE_BASEID")
+BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 MCP_CONFIG_ID = os.getenv("SCALEKIT_MCP_CONFIG_ID")
 # "mcp" (default) routes through the Virtual MCP Server. "direct" bypasses it via
 # actions.execute_tool -- same arguments, same return shape, kept as an escape
