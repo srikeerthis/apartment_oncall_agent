@@ -1,0 +1,27 @@
+# Direct dependencies only. Transitive deps (grpcio, protobuf, pydantic,
+# starlette, uvicorn, anyio, ...) are pulled in automatically and are not
+# pinned here on purpose.
+#
+# NOTE: this project's venv is isolated (include-system-site-packages = false),
+# but ROS Jazzy leaks into `pip list` via PYTHONPATH=/opt/ros/jazzy/....
+# Those packages are NOT part of this project and must never be uninstalled.
+
+# Scalekit: connected accounts, session tokens, virtual MCP server
+scalekit-sdk-python==2.15.0
+
+# MCP client used to call the virtual MCP server over streamable HTTP
+mcp==1.28.1
+
+# Config and secrets
+python-dotenv==1.2.2
+PyYAML==6.0.3
+
+# HTTP: httpx for the runtime path, requests for the Airtable setup script
+httpx==0.28.1
+requests==2.34.2
+
+# Seeding fake ticket rows in the Airtable base
+Faker==40.36.0
+
+# Tests
+pytest==9.1.1
