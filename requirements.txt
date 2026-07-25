@@ -1,6 +1,6 @@
 # Direct dependencies only. Transitive deps (grpcio, protobuf, pydantic,
-# starlette, uvicorn, anyio, ...) are pulled in automatically and are not
-# pinned here on purpose.
+# starlette, anyio, ...) are pulled in automatically and are not pinned
+# here on purpose.
 #
 # NOTE: this project's venv is isolated (include-system-site-packages = false),
 # but ROS Jazzy leaks into `pip list` via PYTHONPATH=/opt/ros/jazzy/....
@@ -25,3 +25,7 @@ Faker==40.36.0
 
 # Tests
 pytest==9.1.1
+
+# MeetStream bridge server (agent/bridge.py)
+fastapi>=0.111
+uvicorn[standard]>=0.30
