@@ -28,13 +28,16 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request
 
 import tickets
+from agent import session_store as store
 from agent.meetstream_client import MeetStreamClient
 from agent.speaker_map import resolve as resolve_speaker
 from agent.triggers import classify
+from agent.web import router as web_router
 
 load_dotenv()
 
 app = FastAPI(title="property_call_agent bridge")
+app.include_router(web_router)  # chat UI, live transcript, ticket dashboard at /
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -104,23 +107,37 @@ async def _handle_utterance(bot_id: str, speaker_label: str, text: str) -> None:
     tenant_id = resolve_speaker(speaker_label)
     if tenant_id is None:
         print(f"[trigger] unrecognized speaker {speaker_label!r}, ignoring")
+        store.add_activity(
+            "error", None, f"Unrecognized speaker {speaker_label!r} — no action taken", ok=False
+        )
         return
 
     try:
         if trigger == "status":
             tickets_list = await asyncio.to_thread(tickets.get_status, tenant_id)
             message = _status_message(tickets_list)
+            store.add_activity(
+                "status_lookup", tenant_id, f"Read {len(tickets_list)} ticket(s)"
+            )
         else:
             ticket = await asyncio.to_thread(tickets.create_ticket, tenant_id, text)
             message = f"Filed — as you, {ticket['tenant_name'].split()[0]}."
+            store.add_activity(
+                "ticket_filed", tenant_id, f"{ticket['tenant_name']}: {ticket['issue']}"
+            )
     except tickets.TicketsError as e:
         # TicketsError messages are written to be spoken aloud as-is.
         message = str(e)
+        store.add_activity("error", tenant_id, str(e), ok=False)
     except Exception as e:
         print(f"[trigger] unexpected error handling utterance: {e!r}")
+        store.add_activity("error", tenant_id, f"{type(e).__name__}: {e}", ok=False)
         return
 
     print(f"[trigger] {trigger} for {speaker_label!r} -> {tenant_id}: {message!r}")
+    # Show MIA's spoken reply in the UI transcript, so the browser view matches
+    # what people in the call actually heard.
+    store.record_agent_reply(bot_id, message)
 
     client = MeetStreamClient()
     try:
@@ -142,6 +159,7 @@ async def on_transcript(request: Request, background_tasks: BackgroundTasks) -> 
     payload = await request.json()
     print(f"[transcript] {json.dumps(payload)[:300]}")
     _append_jsonl(TRANSCRIPT_LOG, payload)
+    store.record_transcript(payload)  # feeds the live transcript pane in the UI
 
     bot_id = payload.get("bot_id")
     extracted = _extract_utterance(payload)
