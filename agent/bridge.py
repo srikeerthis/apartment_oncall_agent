@@ -9,24 +9,28 @@ Then point .env's WEBHOOK_URL / CALLBACK_URL at the ngrok https URL
 (e.g. https://abcd1234.ngrok-free.app/meetstream/webhook) and create a bot
 with agent/create_bot.py.
 
-Right now this just listens, logs, and can speak back — no Scalekit/Airtable
-wiring yet (that's the merge step, once the partner's get_status/create_ticket
-functions are ready). Every raw payload also gets appended to data/*.jsonl so
-the exact JSON shape can be shared with the partner.
+on_transcript resolves the speaker, checks for a trigger phrase, calls
+tickets.get_status/create_ticket, and speaks the result back into the call.
+Every raw payload also gets appended to data/*.jsonl.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import BackgroundTasks, FastAPI, Request
 
+import tickets
 from agent.meetstream_client import MeetStreamClient
+from agent.speaker_map import resolve as resolve_speaker
+from agent.triggers import classify
 
 load_dotenv()
 
@@ -37,11 +41,94 @@ DATA_DIR.mkdir(exist_ok=True)
 TRANSCRIPT_LOG = DATA_DIR / "transcript_log.jsonl"
 CALLBACK_LOG = DATA_DIR / "callback_log.jsonl"
 
+# Recently-handled (bot_id, speaker, text) triples. MeetStream may retry a
+# webhook it considers slow; this stops a retry (or an accidental duplicate
+# delivery) from filing the same ticket twice.
+_RECENT = deque(maxlen=200)
+
 
 def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
     record = {"logged_at": datetime.now(timezone.utc).isoformat(), **record}
     with path.open("a") as f:
         f.write(json.dumps(record) + "\n")
+
+
+def _extract_utterance(payload: dict[str, Any]) -> tuple[str, str] | None:
+    """(speaker_label, text) for a complete utterance, or None if this
+    payload isn't one (a mid-sentence caption revision, an empty turn, ...).
+
+    Two shapes depending on STREAMING_PROVIDER:
+      - deepgram/assemblyai streaming: top-level "utterance" + "end_of_turn"
+        (MeetStreamClient always requests transcription_mode="sentence", so
+        this already arrives as one complete sentence per call).
+      - meeting_captions: nested under "caption".
+    """
+    if "utterance" in payload:
+        if not payload.get("end_of_turn", True):
+            return None
+        text = (payload.get("utterance") or "").strip()
+        speaker = payload.get("speakerName") or ""
+        return (speaker, text) if text else None
+
+    caption = payload.get("caption")
+    if caption:
+        text = (caption.get("text") or "").strip()
+        speaker = caption.get("speakerDisplayName") or caption.get("speakerName") or ""
+        return (speaker, text) if text else None
+
+    return None
+
+
+def _dedupe(key: tuple[str, str, str]) -> bool:
+    """True if `key` was already handled recently."""
+    if key in _RECENT:
+        return True
+    _RECENT.append(key)
+    return False
+
+
+def _status_message(tickets_list: list[dict[str, Any]]) -> str:
+    if not tickets_list:
+        return "You don't have any tickets on file right now."
+    latest = tickets_list[0]
+    return f"Your most recent ticket — {latest['issue']} — is {latest['status']}."
+
+
+async def _handle_utterance(bot_id: str, speaker_label: str, text: str) -> None:
+    """Runs after the webhook response is already sent, so a slow Airtable
+    round trip can't make MeetStream think the webhook is unhealthy."""
+    trigger = classify(text)
+    if trigger is None:
+        return
+
+    tenant_id = resolve_speaker(speaker_label)
+    if tenant_id is None:
+        print(f"[trigger] unrecognized speaker {speaker_label!r}, ignoring")
+        return
+
+    try:
+        if trigger == "status":
+            tickets_list = await asyncio.to_thread(tickets.get_status, tenant_id)
+            message = _status_message(tickets_list)
+        else:
+            ticket = await asyncio.to_thread(tickets.create_ticket, tenant_id, text)
+            message = f"Filed — as you, {ticket['tenant_name'].split()[0]}."
+    except tickets.TicketsError as e:
+        # TicketsError messages are written to be spoken aloud as-is.
+        message = str(e)
+    except Exception as e:
+        print(f"[trigger] unexpected error handling utterance: {e!r}")
+        return
+
+    print(f"[trigger] {trigger} for {speaker_label!r} -> {tenant_id}: {message!r}")
+
+    client = MeetStreamClient()
+    try:
+        await asyncio.to_thread(client.send_message, bot_id, message)
+    except Exception as e:
+        print(f"[trigger] failed to speak result: {e!r}")
+    finally:
+        client.close()
 
 
 @app.get("/health")
@@ -50,22 +137,18 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/meetstream/webhook")
-async def on_transcript(request: Request) -> dict[str, str]:
-    """Live transcript chunk + speaker label, one call per utterance.
-
-    Shape isn't finalized until we see a real payload — logging the raw body
-    is the point here. Once confirmed, drop the exact JSON in the partner
-    deliverable notes (README / shared doc) and tighten this into a typed
-    model.
-    """
+async def on_transcript(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
+    """Live transcript chunk + speaker label, one call per utterance."""
     payload = await request.json()
     print(f"[transcript] {json.dumps(payload)[:300]}")
     _append_jsonl(TRANSCRIPT_LOG, payload)
 
-    # Placeholder for the merge step: speaker -> tenant lookup + trigger
-    # detection + Scalekit call go here once agent/speaker_map.py and
-    # agent/triggers.py exist and the partner's get_status/create_ticket
-    # functions are ready.
+    bot_id = payload.get("bot_id")
+    extracted = _extract_utterance(payload)
+    if bot_id and extracted is not None:
+        speaker_label, text = extracted
+        if not _dedupe((bot_id, speaker_label, text)):
+            background_tasks.add_task(_handle_utterance, bot_id, speaker_label, text)
 
     return {"status": "received"}
 
