@@ -25,7 +25,16 @@ tenants:
     # join key for filterByFormula, so a trailing space silently returns 0 tickets.
     display_name: Dana Reyes
     unit: "4B"
+    # What MeetStream reports as the speaker on the call (Google/Zoom account
+    # display name) -- almost never the same string as display_name above.
+    speaker_labels:
+      - Dana Reyes
+      - Dana
+      - Anirudh Kompella   # live-test account, confirmed from data/transcript_log.jsonl
 
   tenant_b:
     display_name: Sam Okafor
     unit: "2A"
+    speaker_labels:
+      - Sam Okafor
+      - Sam
