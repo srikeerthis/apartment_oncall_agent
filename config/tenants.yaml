@@ -38,3 +38,9 @@ tenants:
     speaker_labels:
       - Sam Okafor
       - Sam
+      # Confirmed from data/transcript_log.jsonl on a live Meet call. Google
+      # sends TWO different strings and the bridge reads speakerDisplayName,
+      # so both are listed -- do not prune either.
+      - srikeerthi          # caption.speakerDisplayName
+      - srikeerthi s        # caption.speakerName
+      - Srikeerthi Srinivasan
