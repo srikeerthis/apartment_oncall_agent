@@ -36,6 +36,13 @@ def main() -> None:
         default="MIA",
         help="Display name for the bot in the call (default: MIA)",
     )
+    parser.add_argument(
+        "--streaming-provider",
+        default=os.environ.get("STREAMING_PROVIDER", "meeting_captions"),
+        help="meeting_captions / deepgram_streaming / assemblyai_streaming / "
+             "jigsawstack / sarvam / meetstream "
+             "(default: meeting_captions — no extra API key needed)",
+    )
     args = parser.parse_args()
 
     if not args.meeting_link:
@@ -59,6 +66,7 @@ def main() -> None:
             webhook_url=webhook_url,
             callback_url=callback_url,
             bot_name=args.bot_name,
+            streaming_provider=args.streaming_provider,
         )
     finally:
         client.close()
