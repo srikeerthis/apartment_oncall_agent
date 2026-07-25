@@ -1,242 +1,179 @@
-# apartment_oncall_agent
+# property_call_agent
 
-An on-call agent for residential rentals. Residents text it; it answers from the community rule book, drafts maintenance work orders, and routes anything it shouldn't touch to a human.
+A live-call maintenance agent for residential property management. It joins a tenant call as a participant, answers ticket-status questions out loud from real data, and files new maintenance requests — acting as the specific tenant who asked, not as a shared service account.
 
-> **Status: early.** The retrieval and triage layers work. Scheduling is draft-only by design — see [Deliberate non-goals](#deliberate-non-goals).
+> **Status: hackathon build.** Scoped for a single demo path: one live call, two known tenants, one connector. Not a general-purpose triage system — see [Deliberate non-goals](#deliberate-non-goals).
 
 ---
 
 ## What it does
 
-A resident sends a message. The agent:
+A property manager (or the tenant directly) is on a live call with MIA, the meeting agent, present as a participant.
 
-1. Runs a **safety gate** before any model call. Gas, flooding, no heat, electrical, sewage backup, smoke → page a human immediately, no LLM in the path.
-2. **Triages** the surviving message into one of four buckets: question, maintenance request, non-maintenance complaint, or human-only.
-3. **Answers** questions from the community rule book, always with a citation to the clause it relied on.
-4. **Drafts a work order** for maintenance requests — extracting unit, category, severity, entry permission, and availability — and checks it against open tickets before writing.
-5. **Escalates** disputes, neighbor conflicts, and anything involving safety between residents to the property manager, untouched.
-
-A human dispatcher confirms every work order before it reaches a technician's schedule.
+1. MIA **joins the call** via MeetStream and listens with live, speaker-diarized transcription.
+2. When a tenant asks a **status question** ("what's the status of my ticket?"), the agent reads the real record and **speaks the answer back into the call**.
+3. When a tenant reports a **new issue** ("there's also a leak under the sink"), the agent identifies who's speaking, resolves their identity through Scalekit, and **files the ticket under their own account** — not a generic bot identity.
+4. Every write is scoped to the tenant who asked for it. The agent cannot act as, or see the tickets of, anyone else on the call.
 
 ## Deliberate non-goals
 
-These are choices, not gaps. Each one is here because getting it wrong is worse than not doing it.
+Each of these is a scope cut made for the build window, not an oversight.
 
 | Not doing | Why |
 |---|---|
-| Auto-scheduling technicians | Scheduling is constrained optimization — skill match, parts, geography, resident windows. The labor is in intake and triage; dispatch stays human. |
-| Deciding who pays for a repair | Normal wear vs. resident misuse is a money determination with dispute risk. The agent records and cites; a human rules. |
-| Answering in the register of legal advice | Residential tenancy is state- and city-specific. "Your lease says X, §7.3" is safe. "You're entitled to X" is not. |
-| Handling harassment, threats, or discrimination claims | Straight to a human. The agent does not process these at all. |
-| Troubleshooting emergencies with the resident | The safety gate fires first and cannot be reasoned around. |
+| Dynamic speaker enrollment | Speaker → tenant identity is a hardcoded map for the demo, not auto-discovered from calendar or voice ID. |
+| General intent classification | Trigger detection is a small, explicit set of phrases/keywords, not an open-ended classifier. |
+| Multi-connector support | One connector (Airtable) is wired end-to-end rather than several done shallowly. |
+| Persistent audit ledger / postmortem generation | Out of scope for the demo; the identity-and-permission story is the point, not reporting. |
+| Auto-dispatching a technician | The agent files the request; a human still schedules the work. |
 
 ## Architecture
 
 ```
-resident message
+live call (Zoom / Meet)
       │
       ▼
-┌─────────────────┐   emergency
-│  safety gate    │──────────────▶ page on-call human
-│  (pre-model)    │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│     triage      │
-└────────┬────────┘
-         │
-   ┌─────┼─────────────────┬──────────────────────┐
-   ▼     ▼                 ▼                      ▼
-answer   work order      manager only        human-only
-(cited)  (draft)         (disputes)          (safety)
-   │        │
-   │        ▼
-   │   dedupe check ──▶ dispatcher confirms ──▶ schedule write
-   ▼
-resident
+┌────────────────────┐
+│   MeetStream bot    │  joins call, live diarized transcript,
+│   (MIA)             │  speaks answers/confirmations back
+└─────────┬───────────┘
+          │ webhook: transcript chunk + speaker label
+          ▼
+┌────────────────────┐
+│  bridge server      │  speaker → tenant identity map
+│  (your glue code)   │  trigger detection: status vs. new issue
+└─────────┬───────────┘
+          │
+          ▼
+┌────────────────────┐
+│     Scalekit        │  mint short-lived session token
+│  Virtual MCP Server │  scoped to that tenant's connected account
+└─────────┬───────────┘
+          │
+          ▼
+┌────────────────────┐
+│     Airtable        │  read: ticket status
+│  (Tickets table)    │  write: new ticket record
+└────────────────────┘
 ```
 
 ### Authorization model
 
-The hard problem here is not retrieval, it's scoping. A resident in 4B must be able to reach their own lease and the building rules, and must be structurally incapable of reaching 4C's anything.
+The hard problem is not "call Airtable," it's scoping: a tenant on the call must be able to check or create *their own* ticket, and must be structurally incapable of touching anyone else's.
 
-Enforcement is a **metadata pre-filter on the vector query**, not a prompt instruction:
+Enforcement happens at the identity layer, not the prompt layer:
 
-```python
-retriever.search(
-    query=embed(message),
-    filter={"$or": [
-        {"scope": "shared"},
-        {"scope": "unit", "unit_id": session.unit_id},
-    ]},
-)
-```
+- Each tenant has their **own** Scalekit-connected Airtable account, authorized once ahead of time.
+- Right before any tool call, the bridge server mints a **session token scoped to the specific tenant who spoke** (`create_session_token`, short expiry, per-utterance).
+- The Virtual MCP Server only exposes `list_records` / `create_record` on the Tickets table — nothing else in the base is reachable.
+- A tenant's token can only resolve to their own identity. There is no shared or admin token in the request path — "acting as the tenant" is enforced by which token exists, not by an instruction telling the model to behave.
 
-Documents outside that filter are never candidates. A system prompt saying "do not reveal other residents' information" is a suggestion, not an access control.
+### The two systems this depends on
 
-Three zones:
+**MeetStream** — meeting infrastructure. Gives the agent ears (live diarized transcript via webhook) and a voice (`send_message` / MIA speech) inside the actual call. Also used once per call to resolve participant names via `fetch_participants`.
 
-- **shared** — community rules, amenity policy, maintenance process. Same for every resident.
-- **unit** — lease, ledger, work order history. Scoped to the requesting unit.
-- **excluded** — other units, owner financials, vendor contracts, arrears reports. Never indexed into the resident-facing store at all.
-
-### The rule book is two documents
-
-These get conflated constantly and shouldn't be.
-
-**`config/community_rules/`** — lease terms and community policy. Quiet hours, pet policy, guest rules, parking, and responsibility allocation. Retrieved and cited. Read-only to the agent.
-
-**`config/runbook.yaml`** — the on-call SOP. Severity definitions, SLA per category, after-hours paging, and what the agent may resolve without a human. This is what makes it an *on-call* agent rather than a chatbot.
-
-It lives in version control and is meant to be edited by the property manager, not by whoever owns the prompt:
-
-```yaml
-severities:
-  emergency:
-    triggers: [gas, flooding, no_heat_winter, electrical, sewage, smoke]
-    action: page_human
-    bypass_model: true
-    sla_minutes: 15
-  urgent:
-    triggers: [no_hot_water, refrigerator_out, ac_out_heat_advisory, sole_toilet]
-    action: draft_work_order
-    sla_hours: 24
-  routine:
-    triggers: [dripping_faucet, blind_broken, cabinet_hinge, light_fixture]
-    action: draft_work_order
-    sla_days: 5
-
-entry:
-  notice_hours_required: 24
-  emergency_exempt: true
-
-escalate_to_manager:
-  - noise_complaint
-  - neighbor_dispute
-  - parking_dispute
-  - lease_violation_report
-```
+**Scalekit** — identity and authorization. Owns the per-tenant OAuth connection to Airtable, mints the short-lived per-tenant session tokens, and governs every tool call through a single Virtual MCP Server so scope enforcement lives outside the agent's own code.
 
 ## MCP tools
 
-The write side is exposed as an MCP server. Every tool is narrow, validated, and idempotent.
+Exposed through Scalekit's Virtual MCP Server, backed by one Airtable connection.
 
 | Tool | Access | Notes |
 |---|---|---|
-| `search_rules` | read | Scoped to shared + requesting unit. Returns text with clause citations. |
-| `get_unit_context` | read | Lease dates, balance, open tickets for the requesting unit only. |
-| `check_open_orders` | read | Dedupe lookup by unit + category + open status. |
-| `create_work_order` | write | Requires `dedupe_key`. Draft status only — never dispatches. |
-| `propose_slot` | write | Respects `entry.notice_hours_required`. Proposal, not a booking. |
-| `notify_resident` | write | Status updates on existing tickets. |
-| `page_human` | write | Bypasses everything. Called by the safety gate, not by the model. |
-
-`create_work_order` takes a client-supplied `dedupe_key` so a retried call cannot double-book. Every write carries the resident's original message and the agent's reasoning as an audit trail.
-
-### Deduplication
-
-The failure mode that actually bites: a resident reports a leak Monday, again Tuesday when nobody came, again Wednesday, angry. Three work orders, three dispatches, one confused technician.
-
-Matching is on `(unit_id, category, status=open)` within a configurable window. On a match, the agent responds with a status update on the existing ticket rather than creating a new one — which is also the cheapest resident-satisfaction win in the product.
+| `list_records` | read | Filtered to the requesting tenant's rows only; returns ticket status. |
+| `create_record` | write | Inserts a new ticket under the calling tenant's identity; no cross-tenant write path exists. |
 
 ## Getting started
 
-**Requirements:** Python 3.11+, PostgreSQL 15+ with `pgvector`, an Anthropic API key.
+**Requirements:** a MeetStream account + API key, a Scalekit account, an Airtable base, `ngrok` (or any public webhook URL) for local testing.
 
 ```bash
-git clone https://github.com/<you>/apartment_oncall_agent.git
-cd apartment_oncall_agent
+git clone https://github.com/<you>/property_call_agent.git
+cd property_call_agent
 
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -r requirements.txt
 
 cp .env.example .env      # fill in the values below
 ```
 
 ```bash
 # .env
-ANTHROPIC_API_KEY=sk-ant-...
-DATABASE_URL=postgresql://localhost:5432/oncall
-TWILIO_ACCOUNT_SID=...            # SMS intake
-TWILIO_AUTH_TOKEN=...
-ONCALL_PAGER_NUMBER=+1...         # where the safety gate pages
+MEETSTREAM_API_KEY=...
+SCALEKIT_CLIENT_ID=skc_...
+SCALEKIT_CLIENT_SECRET=...
+SCALEKIT_ENV_URL=https://yourorg.scalekit.com
+AIRTABLE_BASE_ID=...
+AIRTABLE_CONNECTION_NAME=...
+WEBHOOK_URL=https://<your-ngrok-subdomain>.ngrok.io/meetstream/webhook
 ```
 
-Seed a demo building and index the rule book:
+Set up the Airtable base:
+
+```
+Base:  Maintenance Requests
+Table: Tickets
+  Tenant Name   (text)
+  Unit          (text)
+  Issue         (text)
+  Status        (single select: Open / In Progress / Resolved)
+  Created At    (date)
+```
+
+Seed two or three fake tickets so status lookups have something real to return.
+
+Connect two test tenants in Scalekit (**AgentKit → Connected Accounts**), confirm both show `ACTIVE`, then create the Virtual MCP Server exposing only `list_records` and `create_record`.
+
+Run the bridge server and start a bot:
 
 ```bash
-alembic upgrade head
-python -m oncall.seed --building demo        # units, residents, a mock PMS
-python -m oncall.index config/community_rules/
+uvicorn agent.bridge:app --reload           # webhook receiver, :8000
+python -m agent.create_bot --meeting-link "https://meet.google.com/..."
 ```
-
-Run the API and the MCP server:
-
-```bash
-uvicorn oncall.api:app --reload           # intake webhook, :8000
-python -m oncall.mcp_server               # MCP tools, :8081
-```
-
-Try it without SMS:
-
-```bash
-python -m oncall.cli --unit 4B "there's water coming from under the sink"
-python -m oncall.cli --unit 4B "am I allowed to have a cat?"
-python -m oncall.cli --unit 4B "the people upstairs are so loud"
-```
-
-The three should route to a work order draft, a cited answer, and a manager escalation respectively.
 
 ## Project layout
 
 ```
-oncall/
-  gate.py            safety gate — keyword + classifier, runs before any model call
-  triage.py          four-bucket classifier
-  retrieval.py       scoped vector search, citation extraction
-  extract.py         structured work order fields from free text
-  dedupe.py          open-ticket matching
-  mcp_server.py      MCP tool definitions
-  api.py             intake webhook
-  cli.py             local harness
+agent/
+  bridge.py           webhook receiver + orchestration loop
+  speaker_map.py       hardcoded speaker → tenant identity lookup
+  triggers.py          status-question / new-issue detection
+  scalekit_client.py   session token minting + Virtual MCP calls
+  create_bot.py        MeetStream bot creation helper
 config/
-  runbook.yaml       on-call SOP — severity, SLA, escalation
-  community_rules/   lease and policy documents
-evals/
-  gate_cases.yaml    emergency phrasings that must never reach the model
-  triage_cases.yaml  labeled routing set
+  speaker_map.yaml     tenant name → Scalekit identifier
 tests/
 ```
 
-## Evaluation
+## Demo script
 
-The gate and the triage classifier have their own test sets, and they are not optional. `evals/gate_cases.yaml` holds emergency phrasings — including indirect ones ("it smells weird in the kitchen", "the radiator's been cold since Friday") — that must route to `page_human`. A gate regression is the only failure in this system that can hurt someone.
-
-```bash
-pytest evals/ -v
-python -m oncall.eval --report
 ```
+Tenant A: "What's the status of my ticket?"
+  → agent resolves speaker → tenant A
+  → reads ticket via Scalekit-governed Airtable call
+  → speaks the status back into the call
 
-Triage is scored on routing accuracy per bucket, with recall on `manager_only` and `emergency` weighted far above precision. A false escalation costs someone thirty seconds. A missed one costs much more.
+Tenant B: "There's also a leak under my sink."
+  → agent resolves speaker → tenant B
+  → mints a session token scoped to tenant B only
+  → creates a new ticket as tenant B
+  → confirms out loud: "Filed — as you, [tenant B]"
+```
 
 ## Roadmap
 
-- [x] Scoped retrieval with clause citations
-- [x] Safety gate with pre-model bypass
-- [x] Four-bucket triage
-- [x] Work order drafting with dedupe
-- [ ] Dispatcher review UI
-- [ ] Real PMS connectors (Buildium, AppFolio) — API access is partner-gated
-- [ ] Multilingual intake
-- [ ] Photo attachment handling for maintenance reports
+- [x] MeetStream bot join + live diarized transcript
+- [x] Hardcoded speaker → tenant identity map
+- [x] Status-check path (read)
+- [x] New-ticket path (write, per-tenant identity)
+- [ ] Dynamic speaker enrollment from calendar invite
+- [ ] Persistent audit ledger of who-asked / who-acted / what-scope
+- [ ] Additional connectors (Linear, Jira) alongside Airtable
+- [ ] Refusal path: agent explains when a tenant lacks permission for a requested action
 
-## Notes on safety
+## Notes on scope
 
-This system talks to residents about their housing. Two things are worth restating:
-
-The safety gate runs on keywords and a classifier **before** the model sees the message, and it fails open to a human. If the gate is uncertain, it pages. An agent that helpfully troubleshoots a gas leak is the single worst outcome this codebase can produce.
-
-Entry scheduling respects statutory notice. Most jurisdictions require 24 hours' notice before non-emergency entry, and many leases restate it. Entry permission is a required field on every work order, not an afterthought — a slot proposed without it is a lease violation created on the landlord's behalf.
+This project is deliberately narrow. The point being demonstrated is that an agent acting inside a live call can resolve *which specific person* is speaking and act only within their own permissions — not that it can handle arbitrary maintenance requests end to end. Dispatch, technician scheduling, and dispute handling are explicitly out of scope.
 
 ## License
 
