@@ -93,14 +93,22 @@ def create_table(base_id):
 # smallest days_ago. Each tenant carries all three statuses so a status question
 # has something interesting to answer either way.
 SEED = [
-    # tenant_a -- Dana Reyes, 4B
-    ("tenant_a", 1, "Open", "Dishwasher is not draining, standing water in the bottom"),
-    ("tenant_a", 6, "In Progress", "Kitchen faucet drips constantly, worse at night"),
-    ("tenant_a", 21, "Resolved", "Bedroom window latch is broken"),
-    # tenant_b -- Sam Okafor, 2A
-    ("tenant_b", 2, "Open", "Radiator in the living room will not turn on"),
-    ("tenant_b", 9, "In Progress", "Front door buzzer does not ring upstairs"),
-    ("tenant_b", 30, "Resolved", "Bathroom exhaust fan rattling"),
+    # Dana Reyes, 4B
+    ("unit_4b", 1, "Open", "Dishwasher is not draining, standing water in the bottom"),
+    ("unit_4b", 6, "In Progress", "Kitchen faucet drips constantly, worse at night"),
+    ("unit_4b", 21, "Resolved", "Bedroom window latch is broken"),
+    # Sam Okafor, 2A
+    ("unit_2a", 2, "Open", "Radiator in the living room will not turn on"),
+    ("unit_2a", 9, "In Progress", "Front door buzzer does not ring upstairs"),
+    ("unit_2a", 30, "Resolved", "Bathroom exhaust fan rattling"),
+    # Srikeerthi Srinivasan, 3C
+    ("unit_3c", 3, "Open", "Bedroom ceiling light flickers and buzzes"),
+    ("unit_3c", 12, "In Progress", "Balcony door sticks and will not lock"),
+    ("unit_3c", 26, "Resolved", "Garbage disposal jammed"),
+    # Anirudh Kompella, 1A
+    ("unit_1a", 4, "Open", "No hot water in the shower before 8am"),
+    ("unit_1a", 15, "In Progress", "Bathroom tile grout cracking near the tub"),
+    ("unit_1a", 33, "Resolved", "Intercom static when buzzing guests in"),
 ]
 
 

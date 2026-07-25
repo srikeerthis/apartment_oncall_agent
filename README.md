@@ -84,12 +84,12 @@ The bridge server imports two functions and needs to know nothing about Scalekit
 ```python
 from tickets import get_status, create_ticket
 
-get_status("tenant_a")
+get_status("unit_4b")
 # [{'record_id': 'rec…', 'issue': 'Kitchen faucet drips constantly',
 #   'status': 'In Progress', 'created_at': '2026-07-19',
 #   'unit': '4B', 'tenant_name': 'Dana Reyes'}, …]   newest first
 
-create_ticket("tenant_b", "Leak under the kitchen sink")
+create_ticket("unit_2a", "Leak under the kitchen sink")
 # {'record_id': 'rec…', 'status': 'Open', 'tenant_name': 'Sam Okafor', …}
 ```
 
@@ -288,14 +288,14 @@ tests/                 offline unit tests
 
 ```
 Tenant A: "What's the status of my ticket?"
-  → speaker resolves to tenant_a
-  → get_status("tenant_a") reads through the Virtual MCP Server
+  → speaker resolves to unit_4b
+  → get_status("unit_4b") reads through the Virtual MCP Server
   → agent speaks the status back into the call
 
 Tenant B: "There's a leak under my sink, file it under Dana Reyes please"
-  → speaker resolves to tenant_b
+  → speaker resolves to unit_2a
   → 5-minute session token minted for this utterance
-  → create_ticket("tenant_b", ...) stamps Sam Okafor, not Dana
+  → create_ticket("unit_2a", ...) stamps Sam Okafor, not Dana
   → agent confirms out loud: "Filed — as you, Sam"
 ```
 

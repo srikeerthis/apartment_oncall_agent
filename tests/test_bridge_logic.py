@@ -101,13 +101,27 @@ def test_status_wins_over_new_issue():
 
 
 def test_known_speakers_resolve():
-    assert resolve("Dana Reyes") == "tenant_a"
-    assert resolve("Sam Okafor") == "tenant_b"
+    assert resolve("Dana Reyes") == "unit_4b"
+    assert resolve("Sam Okafor") == "unit_2a"
+
+
+def test_real_accounts_are_their_own_tenants():
+    # The live Meet accounts are residents in their own right, not aliases onto
+    # the demo personas -- so a ticket they file carries their own name and unit.
+    assert resolve("Srikeerthi Srinivasan") == "unit_3c"
+    assert resolve("Anirudh Kompella") == "unit_1a"
+
+
+@pytest.mark.parametrize("label", ["srikeerthi", "srikeerthi s"])
+def test_both_google_speaker_strings_resolve(label):
+    # Google sends caption.speakerDisplayName AND caption.speakerName, and they
+    # differ. Confirmed from a live call; dropping either breaks resolution.
+    assert resolve(label) == "unit_3c"
 
 
 @pytest.mark.parametrize("label", ["dana reyes", "DANA REYES", "  Dana   Reyes  "])
 def test_speaker_matching_is_normalized(label):
-    assert resolve(label) == "tenant_a"
+    assert resolve(label) == "unit_4b"
 
 
 @pytest.mark.parametrize("label", ["Random Person", "", None, "Dana Reyes Jr"])
