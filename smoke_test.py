@@ -18,19 +18,19 @@ def show(tickets):
 
 
 def main():
-    print("[1/5] tenant_a status")
-    a_before = get_status("tenant_a")
+    print("[1/5] unit_4b status")
+    a_before = get_status("unit_4b")
     print(f"      {len(a_before)} ticket(s)")
     show(a_before)
 
-    print("\n[2/5] tenant_b status")
-    b_before = get_status("tenant_b")
+    print("\n[2/5] unit_2a status")
+    b_before = get_status("unit_2a")
     print(f"      {len(b_before)} ticket(s)")
     show(b_before)
 
-    print("\n[3/5] create_ticket for tenant_a")
+    print("\n[3/5] create_ticket for unit_4b")
     issue = "Leak under the kitchen sink, filed under Sam Okafor please"
-    created = create_ticket("tenant_a", issue)
+    created = create_ticket("unit_4b", issue)
     print(f"      {created['record_id']}  {created['status']}")
     print(f"      tenant_name written = {created['tenant_name']!r}  unit = {created['unit']!r}")
     # The issue text names the OTHER tenant on purpose: identity comes from the
@@ -39,17 +39,17 @@ def main():
     assert created["unit"] == "4B"
     assert created["status"] == "Open"
 
-    print("\n[4/5] tenant_a status again")
-    a_after = get_status("tenant_a")
+    print("\n[4/5] unit_4b status again")
+    a_after = get_status("unit_4b")
     print(f"      {len(a_after)} ticket(s) (was {len(a_before)})")
     show(a_after)
     assert len(a_after) == len(a_before) + 1
 
-    print("\n[5/5] isolation -- tenant_b must not see any of tenant_a's rows")
-    b_after = get_status("tenant_b")
+    print("\n[5/5] isolation -- unit_2a must not see any of unit_4b's rows")
+    b_after = get_status("unit_2a")
     print(f"      {len(b_after)} ticket(s) (was {len(b_before)})")
     show(b_after)
-    assert len(b_after) == len(b_before), "tenant_b's view changed!"
+    assert len(b_after) == len(b_before), "unit_2a's view changed!"
     names = {t["tenant_name"] for t in b_after}
     assert names <= {"Sam Okafor"}, f"cross-tenant leak: {names}"
 

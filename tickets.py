@@ -2,8 +2,8 @@
 
     from tickets import get_status, create_ticket
 
-    get_status("tenant_a")                       -> [{issue, status, created_at, unit}, ...]
-    create_ticket("tenant_b", "leak under sink") -> {issue, status, created_at, unit, record_id}
+    get_status("unit_4b")                       -> [{issue, status, created_at, unit}, ...]
+    create_ticket("unit_2a", "leak under sink") -> {issue, status, created_at, unit, record_id}
 
 Nothing above the line needs to know Scalekit exists.
 
@@ -36,7 +36,7 @@ import scalekit_client as sk
 
 load_dotenv()
 
-BASE_ID = os.getenv("AIRTABLE_BASE_ID") or os.getenv("AIRTABLE_BASEID")
+BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 MCP_CONFIG_ID = os.getenv("SCALEKIT_MCP_CONFIG_ID")
 # "mcp" (default) routes through the Virtual MCP Server. "direct" bypasses it via
 # actions.execute_tool -- same arguments, same return shape, kept as an escape

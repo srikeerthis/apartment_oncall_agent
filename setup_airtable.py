@@ -23,8 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PAT = os.getenv("AIRTABLE_PAT")
-# Accept either spelling so a rename in .env cannot silently break setup.
-BASE_ID = os.getenv("AIRTABLE_BASE_ID") or os.getenv("AIRTABLE_BASEID")
+BASE_ID = os.getenv("AIRTABLE_BASE_ID")
 TABLE_NAME = "Tickets"
 TENANTS_PATH = os.path.join(os.path.dirname(__file__), "config", "tenants.yaml")
 
@@ -84,35 +83,52 @@ def create_table(base_id):
     return r.json()
 
 
+# (tenant_id, days_ago, status, issue)
+#
+# Hand-written, not generated: during the demo you need to know exactly what the
+# agent should say back before it says it.
+#
+# Dates are relative so the data never goes stale, and deliberately spread out --
+# get_status returns newest first, so the FIRST row read aloud is the one with the
+# smallest days_ago. Each tenant carries all three statuses so a status question
+# has something interesting to answer either way.
+SEED = [
+    # Dana Reyes, 4B
+    ("unit_4b", 1, "Open", "Dishwasher is not draining, standing water in the bottom"),
+    ("unit_4b", 6, "In Progress", "Kitchen faucet drips constantly, worse at night"),
+    ("unit_4b", 21, "Resolved", "Bedroom window latch is broken"),
+    # Sam Okafor, 2A
+    ("unit_2a", 2, "Open", "Radiator in the living room will not turn on"),
+    ("unit_2a", 9, "In Progress", "Front door buzzer does not ring upstairs"),
+    ("unit_2a", 30, "Resolved", "Bathroom exhaust fan rattling"),
+    # Srikeerthi Srinivasan, 3C
+    ("unit_3c", 3, "Open", "Bedroom ceiling light flickers and buzzes"),
+    ("unit_3c", 12, "In Progress", "Balcony door sticks and will not lock"),
+    ("unit_3c", 26, "Resolved", "Garbage disposal jammed"),
+    # Anirudh Kompella, 1A
+    ("unit_1a", 4, "Open", "No hot water in the shower before 8am"),
+    ("unit_1a", 15, "In Progress", "Bathroom tile grout cracking near the tub"),
+    ("unit_1a", 33, "Resolved", "Intercom static when buzzing guests in"),
+]
+
+
 def seed_rows(tenants):
-    """Hand-written rows, not generated ones -- during the demo you need to know
-    exactly what the agent should say back before it says it."""
-    a = tenants["tenant_a"]
-    b = tenants["tenant_b"]
+    """Build seed records from SEED, pulling names and units from tenants.yaml so
+    the Airtable join key can never drift from the config."""
     today = date.today()
-    return [
-        {
-            "Tenant Name": a["display_name"],
-            "Unit": a["unit"],
-            "Issue": "Kitchen faucet drips constantly, worse at night",
-            "Status": "In Progress",
-            "Created At": str(today - timedelta(days=6)),
-        },
-        {
-            "Tenant Name": a["display_name"],
-            "Unit": a["unit"],
-            "Issue": "Bedroom window latch is broken",
-            "Status": "Resolved",
-            "Created At": str(today - timedelta(days=21)),
-        },
-        {
-            "Tenant Name": b["display_name"],
-            "Unit": b["unit"],
-            "Issue": "Radiator in the living room will not turn on",
-            "Status": "Open",
-            "Created At": str(today - timedelta(days=2)),
-        },
-    ]
+    rows = []
+    for tenant_id, days_ago, status, issue in SEED:
+        t = tenants[tenant_id]
+        rows.append(
+            {
+                "Tenant Name": t["display_name"],
+                "Unit": t["unit"],
+                "Issue": issue,
+                "Status": status,
+                "Created At": str(today - timedelta(days=days_ago)),
+            }
+        )
+    return rows
 
 
 def list_record_ids(base_id):

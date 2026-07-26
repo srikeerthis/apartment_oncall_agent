@@ -1,8 +1,8 @@
 # Shared tenant contract.
 #
 # Read by BOTH halves of the build:
-#   - this half  -> Airtable row scoping + the identity every write is stamped with
-#   - the bridge -> speaker label from the MeetStream transcript maps to a tenant_id
+#   - tickets.py      -> Airtable row scoping + the identity every write is stamped with
+#   - speaker_map.py  -> MeetStream speaker label -> tenant id
 #
 # IDENTITY MODEL
 # Residents do not own Airtable accounts -- the property company does. So there is
@@ -12,6 +12,19 @@
 #   3. the Virtual MCP Server exposing 2 of Airtable's 48 tools
 # Airtable itself has NO row-level permissions -- any credential that can read the
 # base can read every row. Do not claim otherwise in the demo.
+#
+# TWO DIFFERENT NAMES, DO NOT CONFLATE
+#   display_name    -> Airtable. Must match the "Tenant Name" cell EXACTLY; it is
+#                      the join key for filterByFormula, so a trailing space
+#                      silently returns 0 tickets. Renaming it orphans existing rows.
+#   speaker_labels  -> MeetStream. Whatever the person's account shows in the call.
+#                      Google sends more than one string for the same person
+#                      (caption.speakerName AND caption.speakerDisplayName), so
+#                      list every variant. Matching is normalized (lowercased,
+#                      whitespace-collapsed); an unmatched label resolves to None,
+#                      never a guess -- a misfiled ticket is worse than a missed one.
+#
+# Tenant ids are the unit, lowercased: unit_4b, unit_2a, ...
 
 property_manager:
   # The single Airtable account that owns the Maintenance Requests base.
@@ -20,12 +33,36 @@ property_manager:
   connection_name: airtable
 
 tenants:
-  tenant_a:
-    # display_name MUST match the Airtable "Tenant Name" cell exactly -- it is the
-    # join key for filterByFormula, so a trailing space silently returns 0 tickets.
+  # --- demo personas -------------------------------------------------------
+  unit_4b:
     display_name: Dana Reyes
     unit: "4B"
+    speaker_labels:
+      - Dana Reyes
+      - Dana
 
-  tenant_b:
+  unit_2a:
     display_name: Sam Okafor
     unit: "2A"
+    speaker_labels:
+      - Sam Okafor
+      - Sam
+
+  # --- real accounts, each their own resident ------------------------------
+  unit_3c:
+    display_name: Srikeerthi Srinivasan
+    unit: "3C"
+    speaker_labels:
+      # Confirmed from data/transcript_log.jsonl on a live Meet call. Google
+      # sends TWO different strings and the bridge reads speakerDisplayName,
+      # so both are listed -- do not prune either.
+      - srikeerthi          # caption.speakerDisplayName
+      - srikeerthi s        # caption.speakerName
+      - Srikeerthi Srinivasan
+
+  unit_1a:
+    display_name: Anirudh Kompella
+    unit: "1A"
+    speaker_labels:
+      - Anirudh Kompella
+      - Anirudh
